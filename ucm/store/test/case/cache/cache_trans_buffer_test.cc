@@ -31,7 +31,7 @@ public:
     UC::Test::Detail::Random rd;
 };
 
-INSTANTIATE_TEST_CASE_P(SharedCondition, UCCacheTransBufferTest, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(SharedCondition, UCCacheTransBufferTest, ::testing::Values(false, true));
 
 TEST_P(UCCacheTransBufferTest, GetFirstNode)
 {

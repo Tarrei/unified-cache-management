@@ -22,11 +22,34 @@
  * SOFTWARE.
  * */
 #include <gtest/gtest.h>
+#include <cuda_runtime.h>
 #include "cache/cc/load_queue.h"
 #include "detail/data_generator.h"
 #include "detail/mock_store.h"
 #include "detail/random.h"
 #include "detail/types_helper.h"
+
+namespace {
+
+class DeviceBuffer {
+public:
+    explicit DeviceBuffer(size_t size) : size_(size)
+    {
+        EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
+        EXPECT_EQ(cudaMalloc(&ptr_, size_), cudaSuccess);
+    }
+    ~DeviceBuffer()
+    {
+        if (ptr_) { EXPECT_EQ(cudaFree(ptr_), cudaSuccess); }
+    }
+    void* Data() const { return ptr_; }
+
+private:
+    void* ptr_{nullptr};
+    size_t size_{0};
+};
+
+}  // namespace
 
 class UCCacheLoadQueueTest : public testing::Test {
 public:
@@ -65,8 +88,9 @@ TEST_F(UCCacheLoadQueueTest, LoadSameBlockTwice)
     constexpr size_t shardIdx = 0;
     UC::Test::Detail::DataGenerator data{1, config.blockSize};
     data.Generate();
+    DeviceBuffer deviceBuffer(config.blockSize);
     UC::Detail::TaskDesc desc{
-        {blockId, shardIdx, {data.Buffer()}}
+        {blockId, shardIdx, {deviceBuffer.Data()}}
     };
     auto task1 = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
     auto waiter1 = std::make_shared<UC::Latch>();
@@ -107,8 +131,9 @@ TEST_F(UCCacheLoadQueueTest, LoadWhileBackendSubmitFailed)
     constexpr size_t shardIdx = 0;
     UC::Test::Detail::DataGenerator data{1, config.blockSize};
     data.Generate();
+    DeviceBuffer deviceBuffer(config.blockSize);
     UC::Detail::TaskDesc desc{
-        {blockId, shardIdx, {data.Buffer()}}
+        {blockId, shardIdx, {deviceBuffer.Data()}}
     };
     auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
     auto waiter = std::make_shared<UC::Latch>();
@@ -145,8 +170,9 @@ TEST_F(UCCacheLoadQueueTest, LoadWhileBackendWaitFailed)
     constexpr size_t shardIdx = 0;
     UC::Test::Detail::DataGenerator data{1, config.blockSize};
     data.Generate();
+    DeviceBuffer deviceBuffer(config.blockSize);
     UC::Detail::TaskDesc desc{
-        {blockId, shardIdx, {data.Buffer()}}
+        {blockId, shardIdx, {deviceBuffer.Data()}}
     };
     auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
     auto waiter = std::make_shared<UC::Latch>();

@@ -2,7 +2,11 @@ if(BUILD_UNIT_TESTS)
     include(GoogleTest)
     file(GLOB_RECURSE UCMSHARED_TEST_SOURCE_FILES "./case/*.cc")
     add_executable(ucmshared.test ${UCMSHARED_TEST_SOURCE_FILES})
-    target_include_directories(ucmshared.test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/case)
+    target_include_directories(ucmshared.test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/case
+        ${CMAKE_BINARY_DIR}/_deps/googletest-src/googletest/include
+    )
+    target_link_directories(ucmshared.test PRIVATE ${CMAKE_BINARY_DIR}/lib)
     target_link_libraries(ucmshared.test PRIVATE
         trans metrics infra_logger
         gtest_main gtest

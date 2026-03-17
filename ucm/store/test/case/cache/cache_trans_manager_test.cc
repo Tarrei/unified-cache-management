@@ -21,11 +21,44 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <cuda_runtime.h>
 #include "cache/cc/trans_manager.h"
 #include "detail/data_generator.h"
 #include "detail/mock_store.h"
 #include "detail/random.h"
 #include "detail/types_helper.h"
+
+namespace {
+
+class DeviceBuffer {
+public:
+    explicit DeviceBuffer(size_t size) : size_(size)
+    {
+        EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
+        EXPECT_EQ(cudaMalloc(&ptr_, size_), cudaSuccess);
+    }
+    ~DeviceBuffer()
+    {
+        if (ptr_) { EXPECT_EQ(cudaFree(ptr_), cudaSuccess); }
+    }
+    void CopyFromHost(const void* src, size_t size)
+    {
+        EXPECT_LE(size, size_);
+        EXPECT_EQ(cudaMemcpy(ptr_, src, size, cudaMemcpyHostToDevice), cudaSuccess);
+    }
+    void CopyToHost(void* dst, size_t size) const
+    {
+        EXPECT_LE(size, size_);
+        EXPECT_EQ(cudaMemcpy(dst, ptr_, size, cudaMemcpyDeviceToHost), cudaSuccess);
+    }
+    void* Data() const { return ptr_; }
+
+private:
+    void* ptr_{nullptr};
+    size_t size_{0};
+};
+
+}  // namespace
 
 class UCCacheTransManagerTest : public ::testing::Test {
 public:
@@ -68,9 +101,12 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoad)
     constexpr size_t nBlocks = 1;
     UC::Test::Detail::DataGenerator data1{nBlocks, config.blockSize};
     data1.GenerateRandom();
+    DeviceBuffer srcDevice(config.blockSize);
+    DeviceBuffer dstDevice(config.blockSize);
+    srcDevice.CopyFromHost(data1.Buffer(), config.blockSize);
     UC::Detail::TaskDesc desc1;
     desc1.brief = "Dump";
-    desc1.push_back(UC::Detail::Shard{block, 0, {data1.Buffer()}});
+    desc1.push_back(UC::Detail::Shard{block, 0, {srcDevice.Data()}});
     auto handle1 = transMgr.Submit({TransTask::Type::DUMP, desc1});
     ASSERT_TRUE(handle1.HasValue());
     s = transMgr.Wait(handle1.Value());
@@ -79,11 +115,12 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoad)
     data2.Generate();
     UC::Detail::TaskDesc desc2;
     desc2.brief = "Load";
-    desc2.push_back(UC::Detail::Shard{block, 0, {data2.Buffer()}});
+    desc2.push_back(UC::Detail::Shard{block, 0, {dstDevice.Data()}});
     auto handle2 = transMgr.Submit({TransTask::Type::LOAD, desc2});
     ASSERT_TRUE(handle2.HasValue());
     s = transMgr.Wait(handle2.Value());
     ASSERT_EQ(s, UC::Status::OK());
+    dstDevice.CopyToHost(data2.Buffer(), config.blockSize);
     ASSERT_EQ(data1.Compare(data2), 0);
     finish.Wait();
 }
@@ -125,11 +162,14 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithLayerWise)
     std::for_each_n(blockIds, blockNumber, [](auto& b) { b = TypesHelper::MakeBlockIdRandomly(); });
     DataGenerator data1{blockNumber, blockSize};
     data1.GenerateRandom();
+    DeviceBuffer srcDevice(blockNumber * blockSize);
+    DeviceBuffer dstDevice(blockNumber * blockSize);
+    srcDevice.CopyFromHost(data1.Buffer(), blockNumber * blockSize);
     for (size_t i = 0; i < layerNumber; i++) {
         UC::Detail::TaskDesc desc;
         desc.brief = "Dump";
         for (size_t j = 0; j < blockNumber; j++) {
-            auto addr = (void*)(((char*)data1.Buffer()) + blockSize * j + shardSize * i);
+            auto addr = (void*)(((char*)srcDevice.Data()) + blockSize * j + shardSize * i);
             desc.push_back(UC::Detail::Shard{blockIds[j], i, {addr}});
         }
         auto handle = transMgr.Submit({TransTask::Type::DUMP, desc});
@@ -144,7 +184,7 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithLayerWise)
         UC::Detail::TaskDesc desc;
         desc.brief = "Load";
         for (size_t j = 0; j < blockNumber; j++) {
-            auto addr = (void*)(((char*)data2.Buffer()) + blockSize * j + shardSize * i);
+            auto addr = (void*)(((char*)dstDevice.Data()) + blockSize * j + shardSize * i);
             desc.push_back(UC::Detail::Shard{blockIds[j], i, {addr}});
         }
         auto handle = transMgr.Submit({TransTask::Type::LOAD, desc});
@@ -152,6 +192,7 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithLayerWise)
         s = transMgr.Wait(handle.Value());
         ASSERT_EQ(s.Underlying(), UC::Status::OK().Underlying());
     }
+    dstDevice.CopyToHost(data2.Buffer(), blockNumber * blockSize);
     ASSERT_EQ(data1.Compare(data2), 0);
 }
 
@@ -193,6 +234,9 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithLayerAndChunk)
     std::for_each_n(blockIds, blockNumber, [](auto& b) { b = TypesHelper::MakeBlockIdRandomly(); });
     DataGenerator data1{blockNumber, blockSize};
     data1.GenerateRandom();
+    DeviceBuffer srcDevice(blockNumber * blockSize);
+    DeviceBuffer dstDevice(blockNumber * blockSize);
+    srcDevice.CopyFromHost(data1.Buffer(), blockNumber * blockSize);
     for (size_t i = 0; i < layerNumber; i++) {
         UC::Detail::TaskDesc desc;
         desc.brief = "Dump";
@@ -201,7 +245,7 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithLayerAndChunk)
             shard.owner = blockIds[j];
             shard.index = i;
             for (size_t k = 0; k < chunkNumber; k++) {
-                auto addr = (void*)(((char*)data1.Buffer()) + blockSize * j + shardSize * i +
+                auto addr = (void*)(((char*)srcDevice.Data()) + blockSize * j + shardSize * i +
                                     tensorSize * k);
                 shard.addrs.push_back(addr);
             }
@@ -223,7 +267,7 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithLayerAndChunk)
             shard.owner = blockIds[j];
             shard.index = i;
             for (size_t k = 0; k < chunkNumber; k++) {
-                auto addr = (void*)(((char*)data2.Buffer()) + blockSize * j + shardSize * i +
+                auto addr = (void*)(((char*)dstDevice.Data()) + blockSize * j + shardSize * i +
                                     tensorSize * k);
                 shard.addrs.push_back(addr);
             }
@@ -234,6 +278,7 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithLayerAndChunk)
         s = transMgr.Wait(handle.Value());
         ASSERT_EQ(s.Underlying(), UC::Status::OK().Underlying());
     }
+    dstDevice.CopyToHost(data2.Buffer(), blockNumber * blockSize);
     ASSERT_EQ(data1.Compare(data2), 0);
 }
 
@@ -274,11 +319,14 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithVariableLengthIo)
     std::for_each_n(blockIds, blockNumber, [](auto& b) { b = TypesHelper::MakeBlockIdRandomly(); });
     DataGenerator data1{blockNumber, blockSize};
     data1.GenerateRandom();
+    DeviceBuffer srcDevice(blockNumber * blockSize);
+    DeviceBuffer dstDevice(blockNumber * blockSize);
+    srcDevice.CopyFromHost(data1.Buffer(), blockNumber * blockSize);
     for (size_t i = 0; i < layerNumber; i++) {
         UC::Detail::TaskDesc desc;
         desc.brief = "Dump";
         for (size_t j = 0; j < blockNumber; j++) {
-            auto addr1 = (void*)(((char*)data1.Buffer()) + blockSize * j + shardSize * i);
+            auto addr1 = (void*)(((char*)srcDevice.Data()) + blockSize * j + shardSize * i);
             auto addr2 = (void*)(((char*)addr1) + tensorSize1);
             desc.push_back(UC::Detail::Shard{
                 blockIds[j], i, {addr1, addr2}
@@ -296,7 +344,7 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithVariableLengthIo)
         UC::Detail::TaskDesc desc;
         desc.brief = "Load";
         for (size_t j = 0; j < blockNumber; j++) {
-            auto addr1 = (void*)(((char*)data2.Buffer()) + blockSize * j + shardSize * i);
+            auto addr1 = (void*)(((char*)dstDevice.Data()) + blockSize * j + shardSize * i);
             auto addr2 = (void*)(((char*)addr1) + tensorSize1);
             desc.push_back(UC::Detail::Shard{
                 blockIds[j], i, {addr1, addr2}
@@ -307,5 +355,6 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoadWithVariableLengthIo)
         s = transMgr.Wait(handle.Value());
         ASSERT_EQ(s.Underlying(), UC::Status::OK().Underlying());
     }
+    dstDevice.CopyToHost(data2.Buffer(), blockNumber * blockSize);
     ASSERT_EQ(data1.Compare(data2), 0);
 }
