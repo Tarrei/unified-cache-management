@@ -14,15 +14,13 @@ private:
     size_t blockSize;
     size_t poolSize;
     std::vector<void*> freeBlocks;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
 public:
     MemoryPool(size_t blockSize, size_t poolSize) : blockSize(blockSize), poolSize(poolSize) {
         this->blockSize = (blockSize + 4095) & ~static_cast<size_t>(4095);
         size_t totalSize = this->blockSize * poolSize;
 
-        if (posix_memalign(&pool, 4096, totalSize) != 0) {
-
-        }
+        if (posix_memalign(&pool, 4096, totalSize) != 0) { throw std::bad_alloc(); }
 
         freeBlocks.reserve(poolSize);
         for (size_t i = 0; i < poolSize; ++i) {
@@ -38,6 +36,7 @@ public:
 
     void* allocate() {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (freeBlocks.empty()) { return nullptr; }
         void* block = freeBlocks.back();
         freeBlocks.pop_back();
         return block;
@@ -48,6 +47,14 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         freeBlocks.insert(freeBlocks.end(), blocks.begin(), blocks.end());
         UC_DEBUG("deallocate blocks count: {}", blocks.size());
+    }
+
+    size_t BlockSize() const noexcept { return blockSize; }
+    size_t Capacity() const noexcept { return poolSize; }
+    size_t Available() const noexcept
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return freeBlocks.size();
     }
 };
 

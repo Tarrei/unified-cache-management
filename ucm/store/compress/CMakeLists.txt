@@ -1,4 +1,5 @@
 file(GLOB_RECURSE UCM_COMPRESSOR_STORE_CC_SOURCE_FILES "./cc/*.cc")
+list(FILTER UCM_COMPRESSOR_STORE_CC_SOURCE_FILES EXCLUDE REGEX ".*/test_compress_lib/.*")
 
 add_library(compressor SHARED ${UCM_COMPRESSOR_STORE_CC_SOURCE_FILES})
 target_include_directories(compressor PUBLIC
